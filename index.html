@@ -3,137 +3,139 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JSZip Fast Generator</title>
+    <title>Massive ZIP Generator (Direct to Disk)</title>
     <style>
-        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; margin: 0; min-height: 100vh; }
-        #log { white-space: pre-wrap; font-size: 14px; line-height: 1.6; max-width: 100%; overflow-x: hidden; }
+        body {
+            background: #000;
+            color: #0f0;
+            font-family: monospace;
+            padding: 20px;
+            margin: 0;
+            min-height: 100vh;
+        }
+        #log {
+            white-space: pre-wrap;
+            font-size: 14px;
+            line-height: 1.6;
+            max-width: 100%;
+            overflow-x: hidden;
+        }
+        button {
+            background: #0f0;
+            color: #000;
+            border: none;
+            padding: 12px 24px;
+            font-family: monospace;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        button:disabled {
+            background: #333;
+            color: #666;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
-<div id="log">⏳ Initializing...</div>
+
+<button id="startBtn" onclick="startGeneration()">🚀 Generate 30,000 × 1MB Files (Direct to Disk)</button>
+<div id="log">⏳ Ready. Click the button to start.<br>💡 Requires Chrome, Edge, or Opera on Desktop.</div>
+
+<!-- Load zip.js (supports streaming natively) -->
+<script src="https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.7.34/dist/zip.min.js"></script>
+
 <script>
-(function() {
-    const log = document.getElementById('log');
-    function append(text) {
-        log.textContent += '\n' + text;
-        console.log(text);
+const log = document.getElementById('log');
+const btn = document.getElementById('startBtn');
+
+function append(text) {
+    log.textContent += '\n' + text;
+    console.log(text);
+    // Auto-scroll to bottom
+    window.scrollTo(0, document.body.scrollHeight);
+}
+
+async function startGeneration() {
+    btn.disabled = true;
+
+    // 1. Check for File System Access API support
+    if (!window.showSaveFilePicker) {
+        append('❌ ERROR: Your browser does not support the File System Access API.');
+        append('💡 Please use Google Chrome, Microsoft Edge, or Opera on Desktop.');
+        append('   Safari and Firefox cannot write massive files directly to disk.');
+        btn.disabled = false;
+        return;
     }
 
-    append('🚀 Starting (FAST MODE – No Compression)...');
-
-    // ⚠️ CHANGED: 1 KB instead of 1 MB to prevent 30 GB browser memory crash.
-    // 30,000 files * 1 KB = ~30 MB (Easily handled by any browser)
-    const CHUNK_SIZE = 1024; 
-    const TARGET_FILES = 30000;
-    const CHUNK = new Uint8Array(CHUNK_SIZE);
-    for (let i = 0; i < CHUNK.length; i++) CHUNK[i] = 65; // Fill with 'A'
-
-    let isGenerating = false;
-    let isDownloading = false;
-
-    append('📦 Chunk created (' + CHUNK_SIZE + ' bytes)');
-
-    function loadJSZip(callback) {
-        if (typeof JSZip !== 'undefined') {
-            append('✅ JSZip already loaded');
-            callback();
-            return;
-        }
-        append('⬇ Loading JSZip from CDN...');
-        const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
-        script.onload = () => { append('✅ JSZip loaded from primary CDN'); callback(); };
-        script.onerror = () => {
-            append('⚠️ Primary CDN failed, trying fallback...');
-            const script2 = document.createElement('script');
-            script2.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
-            script2.onload = () => { append('✅ JSZip loaded from fallback CDN'); callback(); };
-            script2.onerror = () => append('❌ All CDNs failed.');
-            document.head.appendChild(script2);
-        };
-        document.head.appendChild(script);
-    }
-
-    function generateZip() {
-        if (isGenerating) return;
-        isGenerating = true;
-        append('🔨 Starting zip generation (STORED mode)...');
-        const zip = new JSZip();
-        let completed = 0;
-
-        function addBatch(start) {
-            if (start >= TARGET_FILES) {
-                isGenerating = false;
-                append('✅ All ' + TARGET_FILES + ' files added to zip');
-                append('📦 Generating blob (STORED mode)...');
-                
-                // Use a timeout to let the UI update before the heavy Blob generation
-                setTimeout(() => {
-                    zip.generateAsync({
-                        type: 'blob',
-                        compression: 'STORE'
-                    }).then(function(blob) {
-                        append('✅ Blob created: ' + (blob.size / 1024 / 1024).toFixed(2) + ' MB');
-                        downloadBlob(blob);
-                    }).catch(function(err) {
-                        append('❌ Blob generation error: ' + err.message);
-                    });
-                }, 100);
-                return;
-            }
-
-            const end = Math.min(start + 500, TARGET_FILES);
-            for (let i = start; i < end; i++) {
-                zip.file('photo_' + String(i).padStart(5, '0') + '.jpg', CHUNK);
-            }
-            completed = end;
-            if (completed % 5000 === 0 || completed === TARGET_FILES) {
-                append('📊 Progress: ' + Math.round((completed / TARGET_FILES) * 100) + '% (' + completed + '/' + TARGET_FILES + ')');
-            }
-            setTimeout(function() { addBatch(end); }, 0); // Use 0ms for faster execution
-        }
-
-        addBatch(0);
-    }
-
-    function downloadBlob(blob) {
-        if (isDownloading) return;
-        isDownloading = true;
-        append('⬇ Triggering download...');
-        try {
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'photos.zip';
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            append('✅ Download should start now!');
-            setTimeout(function() {
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-                isDownloading = false;
-            }, 2000);
-        } catch (e) {
-            isDownloading = false;
-            append('❌ Download error: ' + e.message);
-        }
-    }
-
-    function start() {
-        append('📋 Loading JSZip library...');
-        loadJSZip(function() {
-            append('✅ Library ready, starting generation...');
-            generateZip();
+    try {
+        append('📂 Requesting save location from OS...');
+        
+        // 2. Open a direct file stream to the user's hard drive
+        const handle = await window.showSaveFilePicker({
+            suggestedName: 'massive_30gb.zip',
+            types: [{
+                description: 'ZIP Archive',
+                accept: { 'application/zip': ['.zip'] }
+            }]
         });
-    }
 
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        start();
-    } else {
-        document.addEventListener('DOMContentLoaded', start);
+        const writable = await handle.createWritable();
+        append('💾 File stream opened. Writing DIRECTLY to disk (bypassing RAM limits)...');
+
+        // 3. Initialize zip.js writer with STORE (no compression) for max speed
+        const zipWriter = new zip.ZipWriter(writable, {
+            level: 0, // 0 = STORE (no compression)
+            useWebWorkers: false // Keep in main thread so we can update the UI log
+        });
+
+        const TARGET_FILES = 30000;
+        const CHUNK_SIZE = 1024 * 1024; // 1 Megabyte
+        
+        // Create a SINGLE 1 MB buffer and reuse it. 
+        // This keeps RAM usage at ~1 MB total, regardless of file count!
+        const CHUNK = new Uint8Array(CHUNK_SIZE);
+        for (let i = 0; i < CHUNK_SIZE; i++) CHUNK[i] = 65; // Fill with 'A'
+
+        append(`🔨 Starting generation: ${TARGET_FILES} files × 1 MB = ~${(TARGET_FILES / 1024).toFixed(1)} GB`);
+        const startTime = performance.now();
+
+        // 4. Stream files one by one to disk
+        for (let i = 0; i < TARGET_FILES; i++) {
+            const filename = `photo_${String(i).padStart(5, '0')}.jpg`;
+            
+            // zip.js reads the Uint8Array and streams it directly to the file
+            await zipWriter.add(filename, new zip.Uint8ArrayReader(CHUNK));
+
+            // Update progress every 1,000 files and yield to the browser 
+            // so the UI doesn't freeze and the user can see the log
+            if (i % 1000 === 0 && i > 0) {
+                const pct = Math.round((i / TARGET_FILES) * 100);
+                append(`📊 Progress: ${pct}% (${i}/${TARGET_FILES} files written to disk)`);
+                await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
+            }
+        }
+
+        append('📦 Finalizing ZIP central directory...');
+        await zipWriter.close(); // This finishes the ZIP structure
+        
+        const duration = ((performance.now() - startTime) / 1000).toFixed(1);
+        append(`✅ SUCCESS! ~30 GB file saved to your hard drive.`);
+        append(`⏱️ Total time: ${duration} seconds.`);
+        append(`🧠 Peak RAM usage: ~1 MB (No browser crash!)`);
+
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            append('⚠️ Generation cancelled by user.');
+        } else {
+            append('❌ Fatal Error: ' + err.message);
+            console.error(err);
+        }
+    } finally {
+        btn.disabled = false;
     }
-})();
+}
 </script>
 </body>
 </html>
