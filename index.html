@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Massive ZIP Generator</title>
+    <title>Massive ZIP Generator (FAST)</title>
     <style>
         body {
             background: #000;
@@ -59,81 +59,97 @@
         started = true;
         btn.style.display = 'none';
 
-        append('🚀 Starting generation...');
+        append('🚀 Starting FAST generation...');
         append('📋 Target: ' + TARGET_FILES + ' files × 1 MB ≈ ' + (TARGET_FILES / 1024).toFixed(1) + ' GB');
 
         if (!window.isSecureContext) {
-            append('');
-            append('❌ ERROR: StreamSaver requires HTTPS or localhost.');
-            append('   Current protocol: ' + location.protocol);
-            append('');
-            append('💡 FIX: Run a local server:');
-            append('   python -m http.server 8000');
-            append('   Then open http://localhost:8000');
+            append('❌ ERROR: Requires HTTPS or localhost.');
             return;
         }
 
         if (typeof streamSaver === 'undefined') {
-            append('❌ StreamSaver library failed to load.');
+            append('❌ StreamSaver failed to load.');
             return;
         }
 
         try {
             append('🔗 Opening download stream...');
-            
-            // StreamSaver returns a native WritableStream
             const fileStream = streamSaver.createWriteStream('photos_30gb.zip');
 
-            append('📦 Initializing ZIP writer...');
+            append('📦 Initializing ZIP writer (Web Workers enabled)...');
             
-            // zip.js ZipWriter accepts native WritableStream directly
+            // Enable Web Workers for parallel processing
             const zipWriter = new zip.ZipWriter(fileStream, {
-                level: 0,
-                bufferedWrite: true
+                level: 0,              // STORE mode (no compression)
+                useWebWorkers: true,   // Offload to background threads
+                zip64: true,           // Better performance for large files
+                bufferedWrite: true    // Optimize write operations
             });
 
-            const CHUNK = new Uint8Array(CHUNK_SIZE);
-            CHUNK.fill(65);
+            // Create multiple 1MB buffers for parallel processing
+            const NUM_BUFFERS = 10;
+            const buffers = [];
+            for (let b = 0; b < NUM_BUFFERS; b++) {
+                const buf = new Uint8Array(CHUNK_SIZE);
+                buf.fill(65 + b); // Different content per buffer
+                buffers.push(buf);
+            }
 
-            append('🔨 Streaming files to disk...');
+            append('🔨 Streaming files to disk (FAST MODE)...');
             const startTime = performance.now();
+
+            // Batch write: queue multiple files before awaiting
+            const BATCH_SIZE = 50;
+            let batchPromises = [];
 
             for (let i = 0; i < TARGET_FILES; i++) {
                 const filename = 'photo_' + String(i).padStart(5, '0') + '.jpg';
+                const bufferIndex = i % NUM_BUFFERS;
                 
-                // Add file to ZIP stream
-                await zipWriter.add(filename, new zip.Uint8ArrayReader(CHUNK));
+                // Queue the write (don't await yet)
+                const writePromise = zipWriter.add(filename, new zip.Uint8ArrayReader(buffers[bufferIndex]));
+                batchPromises.push(writePromise);
 
-                if (i > 0 && i % 500 === 0) {
+                // Every BATCH_SIZE files, await all of them together
+                if (batchPromises.length >= BATCH_SIZE) {
+                    await Promise.all(batchPromises);
+                    batchPromises = [];
+                }
+
+                // Progress update every 1000 files (less overhead)
+                if (i > 0 && i % 1000 === 0) {
                     const pct = Math.round((i / TARGET_FILES) * 100);
                     const elapsed = ((performance.now() - startTime) / 1000).toFixed(0);
                     const gbWritten = ((i * CHUNK_SIZE) / (1024 * 1024 * 1024)).toFixed(2);
-                    append('📊 ' + pct + '% (' + i + '/' + TARGET_FILES + ') – ' + gbWritten + ' GB [' + elapsed + 's]');
+                    const speed = (gbWritten / (elapsed / 1000)).toFixed(1);
+                    append('📊 ' + pct + '% (' + i + '/' + TARGET_FILES + ') – ' + gbWritten + ' GB [' + elapsed + 's] @ ' + speed + ' GB/s');
                     await new Promise(r => setTimeout(r, 0));
                 }
+            }
+
+            // Await any remaining writes
+            if (batchPromises.length > 0) {
+                await Promise.all(batchPromises);
             }
 
             append('📦 Finalizing ZIP...');
             await zipWriter.close();
 
             const duration = ((performance.now() - startTime) / 1000).toFixed(1);
+            const avgSpeed = ((TARGET_FILES * CHUNK_SIZE) / (1024 * 1024 * 1024) / (duration / 1000)).toFixed(1);
+            
             append('');
             append('✅ SUCCESS! ~30 GB saved.');
             append('⏱️ Time: ' + duration + ' seconds');
+            append('⚡ Average speed: ' + avgSpeed + ' GB/s');
 
         } catch (err) {
             append('');
             append('❌ Error: ' + err.message);
             console.error(err);
-            append('');
-            append('💡 TROUBLESHOOTING:');
-            append('   • Ensure you\'re on HTTPS or localhost');
-            append('   • Try a different browser (Chrome/Edge/Firefox)');
-            append('   • Check browser console for details');
         }
     }
 
-    // Auto-start on load
     window.addEventListener('load', function () {
         append('✅ Libraries loaded.');
 
@@ -142,7 +158,6 @@
             setTimeout(function () {
                 generate().catch(function (err) {
                     append('⚠️ Auto-start failed: ' + err.message);
-                    append('👇 Click button below to try manually');
                     btn.style.display = 'block';
                     started = false;
                 });
