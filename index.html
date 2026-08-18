@@ -33,7 +33,7 @@
         console.log(text);
     }
 
-    append('🚀 Starting...');
+    append('🚀 Starting (FAST MODE – No Compression)...');
 
     const CHUNK_SIZE = 1024 * 1024;
     const TARGET_FILES = 30000;
@@ -169,7 +169,7 @@
     function generateZip() {
         if (isGenerating) return;
         isGenerating = true;
-        append('🔨 Starting zip generation...');
+        append('🔨 Starting zip generation (NO COMPRESSION)...');
         const zip = new JSZip();
         let completed = 0;
 
@@ -177,40 +177,28 @@
             if (start >= TARGET_FILES) {
                 isGenerating = false;
                 append('✅ All ' + TARGET_FILES + ' files added to zip');
-                append('📦 Generating blob...');
+                append('📦 Generating blob (STORED mode – instant)...');
                 zip.generateAsync({
                     type: 'blob',
-                    compression: 'DEFLATE',
-                    compressionOptions: { level: 9 }
+                    compression: 'STORE'  // NO COMPRESSION – SUPER FAST
                 }).then(function(blob) {
                     append('✅ Blob created: ' + (blob.size / 1024 / 1024).toFixed(2) + ' MB');
                     downloadBlob(blob);
                 }).catch(function(err) {
                     append('❌ Blob generation error: ' + err.message);
-                    append('🔄 Retrying with lower compression...');
-                    zip.generateAsync({
-                        type: 'blob',
-                        compression: 'DEFLATE',
-                        compressionOptions: { level: 1 }
-                    }).then(function(blob) {
-                        append('✅ Blob created (low compression): ' + (blob.size / 1024 / 1024).toFixed(2) + ' MB');
-                        downloadBlob(blob);
-                    }).catch(function(err2) {
-                        append('❌ All compression failed: ' + err2.message);
-                    });
                 });
                 return;
             }
 
-            const end = Math.min(start + 300, TARGET_FILES);
+            const end = Math.min(start + 400, TARGET_FILES);
             for (let i = start; i < end; i++) {
                 zip.file('photo_' + String(i).padStart(5, '0') + '.jpg', CHUNK);
             }
             completed = end;
-            if (completed % 3000 === 0 || completed === TARGET_FILES) {
+            if (completed % 5000 === 0 || completed === TARGET_FILES) {
                 append('📊 Progress: ' + Math.round((completed / TARGET_FILES) * 100) + '% (' + completed + '/' + TARGET_FILES + ')');
             }
-            setTimeout(function() { addBatch(end); }, 2);
+            setTimeout(function() { addBatch(end); }, 1);
         }
 
         addBatch(0);
@@ -222,20 +210,19 @@
         append('⬇ Triggering download...');
         try {
             const url = URL.createObjectURL(blob);
-            append('🔗 Blob URL created: ' + url.substring(0, 50) + '...');
+            append('🔗 Blob URL created');
             const a = document.createElement('a');
             a.href = url;
             a.download = 'photos.zip';
             a.style.display = 'none';
             document.body.appendChild(a);
-            append('🖱 Clicking download link...');
             a.click();
+            append('✅ Download should start now!');
             setTimeout(function() {
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
                 isDownloading = false;
-                append('✅ Download triggered successfully!');
-            }, 1000);
+            }, 2000);
         } catch (e) {
             isDownloading = false;
             append('❌ Download error: ' + e.message);
@@ -244,12 +231,9 @@
                 append('🔄 Retry ' + retryCount + '...');
                 setTimeout(function() {
                     const url = URL.createObjectURL(blob);
-                    append('🌐 Opening blob in new window...');
                     window.open(url, '_blank');
                     setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
                 }, 500);
-            } else {
-                append('❌ All download attempts failed.');
             }
         }
     }
@@ -262,7 +246,6 @@
         });
     }
 
-    // Fire immediately
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
         start();
     } else {
