@@ -5,206 +5,156 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Massive ZIP Generator</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             background: #000;
             color: #0f0;
             font-family: monospace;
+            padding: 20px;
+            margin: 0;
             min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
+        }
+        #log {
+            white-space: pre-wrap;
+            font-size: 14px;
+            line-height: 1.6;
         }
         #startBtn {
+            display: none;
             background: #0f0;
             color: #000;
             border: none;
-            padding: 30px 60px;
+            padding: 14px 28px;
             font-family: monospace;
-            font-size: 24px;
+            font-size: 18px;
             font-weight: bold;
             cursor: pointer;
-            animation: pulse 1.5s infinite;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
         }
-        #startBtn:disabled { background: #333; color: #666; animation: none; cursor: not-allowed; }
-        @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.05)} }
-        #log {
-            white-space: pre-wrap;
-            font-size: 13px;
-            line-height: 1.5;
-            max-width: 90vw;
-            width: 700px;
-            max-height: 60vh;
-            overflow-y: auto;
-            padding: 15px;
-            border: 1px solid #0f0;
-        }
-        .info { color: #0ff; }
-        .warn { color: #ff0; }
-        .err  { color: #f44; }
     </style>
 </head>
 <body>
 
-<button id="startBtn">⬇️ CLICK TO START DOWNLOAD</button>
-<div id="log"></div>
+<button id="startBtn">🚀 Click to Start Download</button>
+<div id="log">⏳ Loading libraries...</div>
 
+<script src="https://cdn.jsdelivr.net/npm/streamsaver@2.0.6/StreamSaver.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.7.34/dist/zip.min.js"></script>
+
 <script>
-const logEl = document.getElementById('log');
-const btn = document.getElementById('startBtn');
+(function () {
+    const logEl = document.getElementById('log');
+    const btn = document.getElementById('startBtn');
 
-function append(text, cls='') {
-    const span = document.createElement('span');
-    if(cls) span.className = cls;
-    span.textContent = text + '\n';
-    logEl.appendChild(span);
-    logEl.scrollTop = logEl.scrollHeight;
-}
-
-btn.addEventListener('click', startGeneration);
-
-async function startGeneration() {
-    btn.disabled = true;
-    btn.textContent = '⏳ Generating...';
+    function append(text) {
+        logEl.textContent += '\n' + text;
+        console.log(text);
+    }
 
     const TARGET_FILES = 30000;
-    const CHUNK_SIZE = 1024 * 1024; // 1 MB each
-    const TOTAL_GB = ((TARGET_FILES * CHUNK_SIZE) / (1024*1024*1024)).toFixed(1);
+    const CHUNK_SIZE = 1024 * 1024; // 1 MB
+    let started = false;
 
-    append(`🚀 Target: ${TARGET_FILES.toLocaleString()} files × 1 MB = ~${TOTAL_GB} GB`);
-    append(`📐 Max supported: Unlimited (streaming to disk)`,'info');
-    append('');
+    async function generate() {
+        if (started) return;
+        started = true;
+        btn.style.display = 'none';
 
-    // Reusable 1 MB buffer (only 1 MB RAM used total!)
-    const CHUNK = new Uint8Array(CHUNK_SIZE);
-    for (let i = 0; i < CHUNK_SIZE; i++) CHUNK[i] = 65;
+        append('🚀 Starting generation...');
+        append('📋 Target: ' + TARGET_FILES + ' files × 1 MB ≈ ' + (TARGET_FILES / 1024).toFixed(1) + ' GB');
 
-    try {
-        // ═══════════════════════════════════════════
-        // METHOD 1: File System Access API (Chrome/Edge/Opera)
-        // ═══════════════════════════════════════════
-        if (window.showSaveFilePicker) {
-            append('✅ Detected: File System Access API (BEST method)');
-            append('📂 Select save location...');
-
-            const handle = await window.showSaveFilePicker({
-                suggestedName: 'photos_30gb.zip',
-                types: [{ description:'ZIP', accept:{'application/zip':['.zip']} }]
-            });
-            const writable = await handle.createWritable();
-            append('💾 Streaming DIRECTLY to disk (zero RAM usage)...');
-
-            const writer = new zip.ZipWriter(writable, { level: 0 });
-            await writeFiles(writer, TARGET_FILES, CHUNK);
-            await writer.close();
-            await writable.close();
-
+        if (!window.isSecureContext) {
             append('');
-            append(`✅ DONE! ${TOTAL_GB} GB saved to disk.`);
+            append('❌ ERROR: StreamSaver requires HTTPS or localhost.');
+            append('   Current protocol: ' + location.protocol);
+            append('');
+            append('💡 FIX: Run a local server:');
+            append('   python -m http.server 8000');
+            append('   Then open http://localhost:8000');
             return;
         }
 
-        // ═══════════════════════════════════════════
-        // METHOD 2: StreamSaver.js (Firefox / older browsers)
-        // ═══════════════════════════════════════════
-        if (typeof ReadableStream !== 'undefined') {
-            append('⚠️ No File System Access API. Trying StreamSaver.js...','warn');
-            append('⬇ Loading StreamSaver...');
+        if (typeof streamSaver === 'undefined') {
+            append('❌ StreamSaver library failed to load.');
+            return;
+        }
 
-            await loadScript('https://cdn.jsdelivr.net/npm/streamsaver@2.0.6/StreamSaver.min.js');
+        try {
+            append('🔗 Opening download stream...');
+            
+            // StreamSaver returns a native WritableStream
+            const fileStream = streamSaver.createWriteStream('photos_30gb.zip');
 
-            if (window.streamSaver) {
-                const fileStream = streamSaver.createWriteStream('photos_30gb.zip');
-                const writable = fileStream.getWriter();
+            append('📦 Initializing ZIP writer...');
+            
+            // zip.js ZipWriter accepts native WritableStream directly
+            const zipWriter = new zip.ZipWriter(fileStream, {
+                level: 0,
+                bufferedWrite: true
+            });
+
+            const CHUNK = new Uint8Array(CHUNK_SIZE);
+            CHUNK.fill(65);
+
+            append('🔨 Streaming files to disk...');
+            const startTime = performance.now();
+
+            for (let i = 0; i < TARGET_FILES; i++) {
+                const filename = 'photo_' + String(i).padStart(5, '0') + '.jpg';
                 
-                // Wrap in a WritableStream-compatible object for zip.js
-                const streamWriter = {
-                    write(data) { return writable.write(data); },
-                    close()   { return writable.close(); }
-                };
+                // Add file to ZIP stream
+                await zipWriter.add(filename, new zip.Uint8ArrayReader(CHUNK));
 
-                append('💾 Streaming via Service Worker to disk...');
-                const writer = new zip.ZipWriter(new zip.WritableStreamWriter(streamWriter), { level: 0 });
-                await writeFiles(writer, TARGET_FILES, CHUNK);
-                await writer.close();
-                await writable.close();
-
-                append('');
-                append(`✅ DONE! ${TOTAL_GB} GB streamed to disk.`);
-                return;
+                if (i > 0 && i % 500 === 0) {
+                    const pct = Math.round((i / TARGET_FILES) * 100);
+                    const elapsed = ((performance.now() - startTime) / 1000).toFixed(0);
+                    const gbWritten = ((i * CHUNK_SIZE) / (1024 * 1024 * 1024)).toFixed(2);
+                    append('📊 ' + pct + '% (' + i + '/' + TARGET_FILES + ') – ' + gbWritten + ' GB [' + elapsed + 's]');
+                    await new Promise(r => setTimeout(r, 0));
+                }
             }
-        }
 
-        // ═══════════════════════════════════════════
-        // METHOD 3: Blob fallback (Safari / last resort) — LIMITED TO ~2 GB
-        // ═══════════════════════════════════════════
-        append('⚠️ Falling back to Blob download (MAX ~2 GB, will reduce file count)','warn');
-        const SAFE_COUNT = Math.min(TARGET_FILES, 1500); // 1500 × 1MB ≈ 1.5 GB (safe)
-        append(`📉 Reduced to ${SAFE_COUNT} files to stay under RAM limit.`,'warn');
+            append('📦 Finalizing ZIP...');
+            await zipWriter.close();
 
-        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
-        const jszip = new JSZip();
+            const duration = ((performance.now() - startTime) / 1000).toFixed(1);
+            append('');
+            append('✅ SUCCESS! ~30 GB saved.');
+            append('⏱️ Time: ' + duration + ' seconds');
 
-        for (let i = 0; i < SAFE_COUNT; i++) {
-            jszip.file(`photo_${String(i).padStart(5,'0')}.jpg`, CHUNK);
-            if (i % 300 === 0) {
-                append(`📊 Adding: ${Math.round(i/SAFE_COUNT*100)}%`);
-                await new Promise(r => setTimeout(r, 0));
-            }
-        }
-
-        append('📦 Building blob...');
-        const blob = await jszip.generateAsync({ type:'blob', compression:'STORE' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = 'photos.zip'; a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
-        append(`✅ Downloaded ${(blob.size/1024/1024).toFixed(0)} MB`);
-
-    } catch(err) {
-        if (err.name === 'AbortError') {
-            append('⚠️ Cancelled by user.','warn');
-        } else {
-            append('❌ ERROR: ' + err.message, 'err');
+        } catch (err) {
+            append('');
+            append('❌ Error: ' + err.message);
             console.error(err);
-        }
-    } finally {
-        btn.disabled = false;
-        btn.textContent = '🔄 Run Again';
-    }
-}
-
-// ─── Shared file-writing loop ───
-async function writeFiles(zipWriter, count, chunk) {
-    const start = performance.now();
-    for (let i = 0; i < count; i++) {
-        await zipWriter.add(
-            `photo_${String(i).padStart(5,'0')}.jpg`,
-            new zip.Uint8ArrayReader(chunk)
-        );
-        if (i % 500 === 0 && i > 0) {
-            const pct = Math.round(i / count * 100);
-            const elapsed = ((performance.now()-start)/1000).toFixed(0);
-            const speed = ((i * 1) / (performance.now()-start) * 1000).toFixed(0);
-            append(`📊 ${pct}% (${i.toLocaleString()}/${count.toLocaleString()}) | ${elapsed}s | ${speed} files/s`);
-            await new Promise(r => setTimeout(r, 0));
+            append('');
+            append('💡 TROUBLESHOOTING:');
+            append('   • Ensure you\'re on HTTPS or localhost');
+            append('   • Try a different browser (Chrome/Edge/Firefox)');
+            append('   • Check browser console for details');
         }
     }
-    append(`📊 100% (${count.toLocaleString()}/${count.toLocaleString()})`);
-}
 
-function loadScript(src) {
-    return new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = src;
-        s.onload = resolve;
-        s.onerror = reject;
-        document.head.appendChild(s);
+    // Auto-start on load
+    window.addEventListener('load', function () {
+        append('✅ Libraries loaded.');
+
+        if (window.isSecureContext && typeof streamSaver !== 'undefined') {
+            append('🔄 Auto-starting in 1 second...');
+            setTimeout(function () {
+                generate().catch(function (err) {
+                    append('⚠️ Auto-start failed: ' + err.message);
+                    append('👇 Click button below to try manually');
+                    btn.style.display = 'block';
+                    started = false;
+                });
+            }, 1000);
+        } else {
+            append('⚠️ Not on HTTPS. Click button to start.');
+            btn.style.display = 'block';
+        }
     });
-}
+
+    btn.onclick = generate;
+})();
 </script>
 </body>
 </html>
