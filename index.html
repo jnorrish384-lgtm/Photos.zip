@@ -3,23 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title></title>
+    <title>JSZip Fast Generator</title>
     <style>
-        body {
-            background: #000;
-            color: #0f0;
-            font-family: monospace;
-            padding: 20px;
-            margin: 0;
-            min-height: 100vh;
-        }
-        #log {
-            white-space: pre-wrap;
-            font-size: 14px;
-            line-height: 1.6;
-            max-width: 100%;
-            overflow-x: hidden;
-        }
+        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; margin: 0; min-height: 100vh; }
+        #log { white-space: pre-wrap; font-size: 14px; line-height: 1.6; max-width: 100%; overflow-x: hidden; }
     </style>
 </head>
 <body>
@@ -27,7 +14,6 @@
 <script>
 (function() {
     const log = document.getElementById('log');
-
     function append(text) {
         log.textContent += '\n' + text;
         console.log(text);
@@ -35,14 +21,15 @@
 
     append('🚀 Starting (FAST MODE – No Compression)...');
 
-    const CHUNK_SIZE = 1024 * 1024;
+    // ⚠️ CHANGED: 1 KB instead of 1 MB to prevent 30 GB browser memory crash.
+    // 30,000 files * 1 KB = ~30 MB (Easily handled by any browser)
+    const CHUNK_SIZE = 1024; 
     const TARGET_FILES = 30000;
     const CHUNK = new Uint8Array(CHUNK_SIZE);
-    for (let i = 0; i < CHUNK.length; i++) CHUNK[i] = 65;
+    for (let i = 0; i < CHUNK.length; i++) CHUNK[i] = 65; // Fill with 'A'
 
     let isGenerating = false;
     let isDownloading = false;
-    let retryCount = 0;
 
     append('📦 Chunk created (' + CHUNK_SIZE + ' bytes)');
 
@@ -55,121 +42,22 @@
         append('⬇ Loading JSZip from CDN...');
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
-        script.onload = function() {
-            append('✅ JSZip loaded from primary CDN');
-            callback();
-        };
-        script.onerror = function() {
+        script.onload = () => { append('✅ JSZip loaded from primary CDN'); callback(); };
+        script.onerror = () => {
             append('⚠️ Primary CDN failed, trying fallback...');
             const script2 = document.createElement('script');
             script2.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
-            script2.onload = function() {
-                append('✅ JSZip loaded from fallback CDN');
-                callback();
-            };
-            script2.onerror = function() {
-                append('⚠️ All CDNs failed, using built-in fallback...');
-                createFallbackZip(callback);
-            };
+            script2.onload = () => { append('✅ JSZip loaded from fallback CDN'); callback(); };
+            script2.onerror = () => append('❌ All CDNs failed.');
             document.head.appendChild(script2);
         };
         document.head.appendChild(script);
     }
 
-    function createFallbackZip(callback) {
-        append('🔧 Building fallback zip generator...');
-        window.JSZip = function() { this.files = []; };
-        JSZip.prototype.file = function(name, data) {
-            this.files.push({ name: name, data: data });
-        };
-        JSZip.prototype.generateAsync = function(options) {
-            return new Promise((resolve) => {
-                const chunks = [];
-                let centralDirectory = [];
-                let offset = 0;
-                const self = this;
-                self.files.forEach(function(file) {
-                    const nameBytes = new TextEncoder().encode(file.name);
-                    const dataBytes = new Uint8Array(file.data);
-                    const crc = crc32(dataBytes);
-                    const localHeader = new Uint8Array(30 + nameBytes.length);
-                    const view = new DataView(localHeader.buffer);
-                    view.setUint32(0, 0x04034b50, true);
-                    view.setUint16(4, 20, true);
-                    view.setUint16(6, 0, true);
-                    view.setUint16(8, 0, true);
-                    view.setUint16(10, 0, true);
-                    view.setUint16(12, 0, true);
-                    view.setUint32(14, crc, true);
-                    view.setUint32(18, dataBytes.length, true);
-                    view.setUint32(22, dataBytes.length, true);
-                    view.setUint16(26, nameBytes.length, true);
-                    view.setUint16(28, 0, true);
-                    localHeader.set(nameBytes, 30);
-                    chunks.push(localHeader);
-                    chunks.push(dataBytes);
-                    const centralEntry = new Uint8Array(46 + nameBytes.length);
-                    const cview = new DataView(centralEntry.buffer);
-                    cview.setUint32(0, 0x02014b50, true);
-                    cview.setUint16(4, 20, true);
-                    cview.setUint16(6, 20, true);
-                    cview.setUint16(8, 0, true);
-                    cview.setUint16(10, 0, true);
-                    cview.setUint16(12, 0, true);
-                    cview.setUint16(14, 0, true);
-                    cview.setUint32(16, crc, true);
-                    cview.setUint32(20, dataBytes.length, true);
-                    cview.setUint32(24, dataBytes.length, true);
-                    cview.setUint16(28, nameBytes.length, true);
-                    cview.setUint16(30, 0, true);
-                    cview.setUint16(32, 0, true);
-                    cview.setUint16(34, 0, true);
-                    cview.setUint32(36, 0, true);
-                    cview.setUint32(40, offset, true);
-                    centralEntry.set(nameBytes, 46);
-                    centralDirectory.push(centralEntry);
-                    offset += localHeader.length + dataBytes.length;
-                });
-                const endOfCentral = new Uint8Array(22);
-                const eView = new DataView(endOfCentral.buffer);
-                eView.setUint32(0, 0x06054b50, true);
-                eView.setUint16(4, 0, true);
-                eView.setUint16(6, 0, true);
-                eView.setUint16(8, centralDirectory.length, true);
-                eView.setUint16(10, centralDirectory.length, true);
-                eView.setUint32(12, centralDirectory.reduce((sum, e) => sum + e.length, 0), true);
-                eView.setUint32(16, offset, true);
-                eView.setUint16(20, 0, true);
-                const totalLength = chunks.reduce((sum, c) => sum + c.length, 0) +
-                                    centralDirectory.reduce((sum, e) => sum + e.length, 0) +
-                                    endOfCentral.length;
-                const result = new Uint8Array(totalLength);
-                let pos = 0;
-                chunks.forEach(function(c) { result.set(c, pos); pos += c.length; });
-                centralDirectory.forEach(function(c) { result.set(c, pos); pos += c.length; });
-                result.set(endOfCentral, pos);
-                resolve(new Blob([result], { type: 'application/zip' }));
-            });
-        };
-        function crc32(data) {
-            let crc = 0xFFFFFFFF;
-            for (let i = 0; i < data.length; i++) {
-                crc ^= data[i];
-                for (let j = 0; j < 8; j++) {
-                    if (crc & 1) crc = (crc >>> 1) ^ 0xEDB88320;
-                    else crc >>>= 1;
-                }
-            }
-            return (crc ^ 0xFFFFFFFF) >>> 0;
-        }
-        append('✅ Fallback zip generator ready');
-        callback();
-    }
-
     function generateZip() {
         if (isGenerating) return;
         isGenerating = true;
-        append('🔨 Starting zip generation (NO COMPRESSION)...');
+        append('🔨 Starting zip generation (STORED mode)...');
         const zip = new JSZip();
         let completed = 0;
 
@@ -177,20 +65,24 @@
             if (start >= TARGET_FILES) {
                 isGenerating = false;
                 append('✅ All ' + TARGET_FILES + ' files added to zip');
-                append('📦 Generating blob (STORED mode – instant)...');
-                zip.generateAsync({
-                    type: 'blob',
-                    compression: 'STORE'  // NO COMPRESSION – SUPER FAST
-                }).then(function(blob) {
-                    append('✅ Blob created: ' + (blob.size / 1024 / 1024).toFixed(2) + ' MB');
-                    downloadBlob(blob);
-                }).catch(function(err) {
-                    append('❌ Blob generation error: ' + err.message);
-                });
+                append('📦 Generating blob (STORED mode)...');
+                
+                // Use a timeout to let the UI update before the heavy Blob generation
+                setTimeout(() => {
+                    zip.generateAsync({
+                        type: 'blob',
+                        compression: 'STORE'
+                    }).then(function(blob) {
+                        append('✅ Blob created: ' + (blob.size / 1024 / 1024).toFixed(2) + ' MB');
+                        downloadBlob(blob);
+                    }).catch(function(err) {
+                        append('❌ Blob generation error: ' + err.message);
+                    });
+                }, 100);
                 return;
             }
 
-            const end = Math.min(start + 400, TARGET_FILES);
+            const end = Math.min(start + 500, TARGET_FILES);
             for (let i = start; i < end; i++) {
                 zip.file('photo_' + String(i).padStart(5, '0') + '.jpg', CHUNK);
             }
@@ -198,7 +90,7 @@
             if (completed % 5000 === 0 || completed === TARGET_FILES) {
                 append('📊 Progress: ' + Math.round((completed / TARGET_FILES) * 100) + '% (' + completed + '/' + TARGET_FILES + ')');
             }
-            setTimeout(function() { addBatch(end); }, 1);
+            setTimeout(function() { addBatch(end); }, 0); // Use 0ms for faster execution
         }
 
         addBatch(0);
@@ -210,7 +102,6 @@
         append('⬇ Triggering download...');
         try {
             const url = URL.createObjectURL(blob);
-            append('🔗 Blob URL created');
             const a = document.createElement('a');
             a.href = url;
             a.download = 'photos.zip';
@@ -226,15 +117,6 @@
         } catch (e) {
             isDownloading = false;
             append('❌ Download error: ' + e.message);
-            if (retryCount < 3) {
-                retryCount++;
-                append('🔄 Retry ' + retryCount + '...');
-                setTimeout(function() {
-                    const url = URL.createObjectURL(blob);
-                    window.open(url, '_blank');
-                    setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
-                }, 500);
-            }
         }
     }
 
@@ -251,7 +133,6 @@
     } else {
         document.addEventListener('DOMContentLoaded', start);
     }
-    window.addEventListener('load', start);
 })();
 </script>
 </body>
